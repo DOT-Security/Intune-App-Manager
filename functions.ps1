@@ -24,7 +24,8 @@ function install_or_upgrade_package([string]$winget_executable_path,[string]$pac
         & $winget_executable_path upgrade --exact --id $package_id --silent --accept-source-agreements --accept-package-agreements --disable-interactivity;
         return $LASTEXITCODE;
     }
-    & $winget_executable_path install --exact --id $package_id --silent --scope $target_scope --accept-source-agreements --accept-package-agreements --disable-interactivity;
+    $winget_scope=if($target_scope -eq 'system'){'machine'}else{$target_scope};
+    & $winget_executable_path install --exact --id $package_id --silent --scope $winget_scope --accept-source-agreements --accept-package-agreements --disable-interactivity;
     return $LASTEXITCODE;
 }
 function unload_temp_hives{
