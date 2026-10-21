@@ -116,6 +116,34 @@ function stop_known_processes([string[]]$process_names){
         get-process -name $process_name -erroraction silentlycontinue|stop-process -force -erroraction silentlycontinue;
     }
 }
+function stop_running_processes([string[]]$process_names){
+    $stopped_processes=@();
+    foreach($process_name in $process_names){
+        foreach($process in @(get-process -name $process_name -includeusername -erroraction silentlycontinue)){
+            $stopped_processes+=[pscustomobject]@{user_name=$process.username;path=$process.path};
+            $process|stop-process -force -erroraction silentlycontinue;
+        }
+    }
+    return $stopped_processes;
+}
+function start_process_as_user([string]$user_name,[string]$executable_path){
+    # SYSTEM can't launch into a user session directly, so run a one-shot interactive task as that user
+    $task_name="IntuneAppManager_relaunch_$([guid]::newguid())";
+    try{
+        $action=new-scheduledtaskaction -execute $executable_path;
+        $principal=new-scheduledtaskprincipal -userid $user_name -logontype interactive;
+        $settings=new-scheduledtasksettingsset -allowstartifonbatteries -dontstopifgoingonbatteries -executiontimelimit ([timespan]::zero);
+        register-scheduledtask -taskname $task_name -action $action -principal $principal -settings $settings -force -erroraction stop|out-null;
+        start-scheduledtask -taskname $task_name -erroraction stop;
+        $process_name=[io.path]::getfilenamewithoutextension($executable_path);
+        for($attempt=0;$attempt -lt 10;$attempt++){
+            if(get-process -name $process_name -includeusername -erroraction silentlycontinue|where-object{$_.username -eq $user_name}){return $true;}
+            start-sleep -seconds 1;
+        }
+        return $false;
+    }catch{return $false;}
+    finally{unregister-scheduledtask -taskname $task_name -confirm:$false -erroraction silentlycontinue;}
+}
 function invoke_uninstall_instance($instance,[string]$winget_executable_path){
     if(-not $instance.winget_id -or -not $winget_executable_path){return -1;}
     & $winget_executable_path uninstall --exact --id $instance.winget_id --silent --accept-source-agreements --disable-interactivity *>$null;
@@ -155,6 +183,9 @@ function manage-app($app,[switch]${detect-only}){
             write-output 'compliant';
             exit 0;
         }
+        $stopped_processes=@();
+        if($app.process_names -and $issues.count -gt 0){$stopped_processes=@(stop_running_processes -process_names $app.process_names);}
+        if($stopped_processes.count -gt 0){$actions_taken+="closed running: $($app.name) ($($stopped_processes.count) process(es))";}
         foreach($item in $to_remove){
             $uninstall_exit_code=invoke_uninstall_instance -instance $item -winget_executable_path $winget_executable_path;
             if($uninstall_exit_code -eq 0){$actions_taken+="removed non-conforming copy: $($app.name) ($($item.scope), $($item.display_version))";}
@@ -165,6 +196,11 @@ function manage-app($app,[switch]${detect-only}){
             $is_success=($package_exit_code -eq 0) -or ($package_exit_code -eq $script:winget_no_applicable_update_exit_code);
             if($is_success){$actions_taken+="installed/upgraded: $($app.name)";}
             else{$failures+="install/upgrade failed: $($app.name) ($package_exit_code)";}
+        }
+        foreach($stopped_process in @($stopped_processes|sort-object user_name,path -unique)){
+            if(-not $stopped_process.path -or -not (test-path $stopped_process.path)){continue;}
+            if(start_process_as_user -user_name $stopped_process.user_name -executable_path $stopped_process.path){$actions_taken+="relaunched: $($app.name) for $($stopped_process.user_name)";}
+            else{$actions_taken+="relaunch failed: $($app.name) for $($stopped_process.user_name)";}
         }
     }finally{unload_temp_hives;}
     write_app_log -script_name "manage-app_$($app.name)" -lines ($actions_taken+$failures);
