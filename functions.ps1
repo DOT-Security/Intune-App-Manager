@@ -72,12 +72,12 @@ function get_instances_for_app([string[]]$display_patterns){
             $instances+=scan_uninstall_root -root $machine_root.path -display_patterns $arp_patterns -scope 'system' -sid $null -arch $machine_root.arch;
         }
         $user_registry_profiles=@();
-        $loaded_sids=get-childitem 'Registry::HKEY_USERS' -erroraction silentlycontinue|where-object{$_.pschildname -match '^S-1-5-21-\d+-\d+-\d+-\d+$'}|select-object -expandproperty pschildname;
+        $loaded_sids=get-childitem 'Registry::HKEY_USERS' -erroraction silentlycontinue|where-object{$_.pschildname -match '^S-1-(5-21|12-1)-\d+-\d+-\d+-\d+$'}|select-object -expandproperty pschildname;
         foreach($sid in $loaded_sids){$user_registry_profiles+=[pscustomobject]@{sid=$sid;hive_root="Registry::HKEY_USERS\$sid"};}
         $profile_list_keys=get-childitem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' -erroraction silentlycontinue;
         foreach($profile_key in $profile_list_keys){
             $sid=$profile_key.pschildname;
-            if($sid -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$'){continue;}
+            if($sid -notmatch '^S-1-(5-21|12-1)-\d+-\d+-\d+-\d+$'){continue;}
             if($loaded_sids -contains $sid){continue;}
             $profile_image_path=(get-itemproperty -path $profile_key.pspath -name 'ProfileImagePath' -erroraction silentlycontinue).profileimagepath;
             if(-not $profile_image_path){continue;}
