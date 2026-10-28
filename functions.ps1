@@ -111,6 +111,27 @@ function get_instances_for_app([string[]]$display_patterns){
     }
     return $instances;
 }
+function get_provisioned_instances_for_app([string[]]$display_patterns){
+    # winget installs of MSIX-based apps run as SYSTEM land as a provisioned package (registered per user at sign-in) with no ARP entry
+    $instances=@();
+    $appx_patterns=@($display_patterns|where-object{$_ -like 'appx:*'}|foreach-object{$_.substring(5)});
+    if($appx_patterns.count -eq 0){return $instances;}
+    try{$provisioned_packages=@(get-appxprovisionedpackage -online -erroraction stop);}catch{return $instances;}
+    foreach($appx_pattern in $appx_patterns){
+        foreach($package in @($provisioned_packages|where-object{$_.displayname -like $appx_pattern})){
+            $instances+=[pscustomobject]@{
+                display_name=$package.displayname;
+                display_version=$package.version.tostring();
+                registry_path=$null;
+                scope='system';
+                sid=$null;
+                package_full_name=$package.packagename;
+                winget_id="MSIX\$($package.packagename)";
+            };
+        }
+    }
+    return $instances;
+}
 function stop_known_processes([string[]]$process_names){
     foreach($process_name in $process_names){
         get-process -name $process_name -erroraction silentlycontinue|stop-process -force -erroraction silentlycontinue;
@@ -161,6 +182,12 @@ function manage-app($app,[switch]${detect-only}){
     try{
         $instances=@();
         if($app.display_patterns){$instances+=get_instances_for_app -display_patterns $app.display_patterns;}
+        $provisioned_instances=@(get_provisioned_instances_for_app -display_patterns $app.display_patterns);
+        if($provisioned_instances.count -gt 0){
+            # Per-user registrations of a provisioned package are that machine-wide install (self-updated per user), not separate copies
+            $provisioned_names=@($provisioned_instances|select-object -expandproperty display_name);
+            $instances=@($instances|where-object{-not ($_.scope -eq 'store' -and $provisioned_names -contains $_.display_name)})+$provisioned_instances;
+        }
         $wrong_scope_instances=@($instances|where-object{$_.scope -ne $expected_scope});
         $matching_scope_instances=@($instances|where-object{$_.scope -eq $expected_scope});
         $keeper=$null;
