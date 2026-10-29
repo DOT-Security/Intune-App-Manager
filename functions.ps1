@@ -18,14 +18,14 @@ function resolve_winget_executable_path{
     if($desktop_app_installer_directory){return join-path $desktop_app_installer_directory.fullname 'winget.exe';}
     return $null;
 }
-function install_or_upgrade_package([string]$winget_executable_path,[string]$package_id,[string]$target_scope='system'){
-    $is_installed=& $winget_executable_path list --exact --id $package_id --accept-source-agreements|select-string -simplematch $package_id;
-    if($is_installed){
+function install_or_upgrade_package([string]$winget_executable_path,[string]$package_id,[string]$target_scope='system',[bool]$is_present){
+    if($is_present){
         & $winget_executable_path upgrade --exact --id $package_id --silent --accept-source-agreements --accept-package-agreements --disable-interactivity *>$null;
         return $LASTEXITCODE;
     }
+    # --force: winget can believe a package is installed after its files are gone, and would otherwise no-op into an upgrade check
     $winget_scope=if($target_scope -eq 'system'){'machine'}else{$target_scope};
-    & $winget_executable_path install --exact --id $package_id --silent --scope $winget_scope --accept-source-agreements --accept-package-agreements --disable-interactivity *>$null;
+    & $winget_executable_path install --exact --id $package_id --silent --force --scope $winget_scope --accept-source-agreements --accept-package-agreements --disable-interactivity *>$null;
     return $LASTEXITCODE;
 }
 function unload_temp_hives{
@@ -198,8 +198,10 @@ function manage-app($app,[switch]${detect-only}){
         if($manage_via_winget){
             $installed_output=& $winget_executable_path list --exact --id $app.package_id --accept-source-agreements;
             $is_installed=$installed_output|select-string -simplematch $app.package_id;
-            if(-not $is_installed -and -not $keeper){$issues+="missing: $($app.name)";}
-            if($is_installed -or $keeper){
+            # display_patterns are the source of truth when set: winget's view runs as SYSTEM and can be wrong in either direction
+            $is_present=if($app.display_patterns){[bool]$keeper}else{[bool]$is_installed};
+            if(-not $is_present){$issues+="missing: $($app.name)";}
+            if($is_present){
                 $upgrade_output=& $winget_executable_path upgrade --exact --id $app.package_id --accept-source-agreements;
                 $has_pending_upgrade=$upgrade_output|select-string -simplematch $app.package_id;
                 if($has_pending_upgrade){$issues+="outdated: $($app.name)";}
@@ -219,7 +221,7 @@ function manage-app($app,[switch]${detect-only}){
             else{$failures+="removal failed: $($app.name) ($($item.scope), exit $uninstall_exit_code)";}
         }
         if($manage_via_winget){
-            $package_exit_code=install_or_upgrade_package -winget_executable_path $winget_executable_path -package_id $app.package_id -target_scope $expected_scope;
+            $package_exit_code=install_or_upgrade_package -winget_executable_path $winget_executable_path -package_id $app.package_id -target_scope $expected_scope -is_present $is_present;
             $is_success=($package_exit_code -eq 0) -or ($package_exit_code -eq $script:winget_no_applicable_update_exit_code);
             if($is_success){$actions_taken+="installed/upgraded: $($app.name)";}
             else{$failures+="install/upgrade failed: $($app.name) ($package_exit_code)";}
