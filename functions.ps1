@@ -119,7 +119,11 @@ function get_provisioned_instances_for_app([string[]]$display_patterns){
     try{$provisioned_packages=@(get-appxprovisionedpackage -online -erroraction stop);}catch{return $instances;}
     foreach($appx_pattern in $appx_patterns){
         foreach($package in @($provisioned_packages|where-object{$_.displayname -like $appx_pattern})){
+            # Windows can keep a provisioned entry whose WindowsApps folder is gone; users then get a dead Start entry and reinstalling the same version is a no-op
+            $manifest_path=[environment]::expandenvironmentvariables([string]$package.installlocation);
+            $files_missing=$manifest_path -and -not (test-path -literalpath $manifest_path);
             $instances+=[pscustomobject]@{
+                files_missing=[bool]$files_missing;
                 display_name=$package.displayname;
                 display_version=$package.version.tostring();
                 registry_path=$null;
@@ -186,8 +190,10 @@ function manage-app($app,[switch]${detect-only}){
         if($provisioned_instances.count -gt 0){
             # Per-user registrations of a provisioned package are that machine-wide install (self-updated per user), not separate copies
             $provisioned_names=@($provisioned_instances|select-object -expandproperty display_name);
-            $instances=@($instances|where-object{-not ($_.scope -eq 'store' -and $provisioned_names -contains $_.display_name)})+$provisioned_instances;
+            $instances=@($instances|where-object{-not ($_.scope -eq 'store' -and $provisioned_names -contains $_.display_name)})+@($provisioned_instances|where-object{-not $_.files_missing});
         }
+        $broken_provisioned_instances=@($provisioned_instances|where-object{$_.files_missing});
+        if($broken_provisioned_instances.count -gt 0){$issues+="provisioned package files missing: $($app.name) ($(($broken_provisioned_instances|select-object -expandproperty display_version) -join ', '))";}
         $wrong_scope_instances=@($instances|where-object{$_.scope -ne $expected_scope});
         $matching_scope_instances=@($instances|where-object{$_.scope -eq $expected_scope});
         $keeper=$null;
